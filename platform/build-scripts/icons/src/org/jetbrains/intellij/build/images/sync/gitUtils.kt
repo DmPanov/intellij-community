@@ -6,6 +6,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.util.stream.Collectors
 import java.util.stream.Stream
+import kotlin.io.path.getLastModifiedTime
 
 internal val GIT = (System.getenv("TEAMCITY_GIT_PATH") ?: System.getenv("GIT") ?: "git").also {
   val noGitFound = "Git is not found, please specify path to git executable in TEAMCITY_GIT_PATH or GIT or add it to PATH"
@@ -198,11 +199,10 @@ internal fun latestChangeCommit(path: String, repo: Path): CommitInfo? {
 }
 
 /**
- * @return latest commit time of [path] change ignoring merge commits for performance reasons
+ * @return latest modified time of [path] change ignoring git commit time for performance reasons
  */
 internal fun latestChangeTime(path: String, repo: Path): Long {
-  // latest commit for file
-  return latestChangeCommit(path, repo)?.timestamp ?: -1
+  return repo.resolve(path).getLastModifiedTime().toMillis()
 }
 
 @Volatile
