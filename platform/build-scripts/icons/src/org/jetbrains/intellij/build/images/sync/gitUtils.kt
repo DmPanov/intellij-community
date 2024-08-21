@@ -6,7 +6,9 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.util.stream.Collectors
 import java.util.stream.Stream
+import kotlin.io.path.exists
 import kotlin.io.path.getLastModifiedTime
+import kotlin.math.max
 
 internal val GIT = (System.getenv("TEAMCITY_GIT_PATH") ?: System.getenv("GIT") ?: "git").also {
   val noGitFound = "Git is not found, please specify path to git executable in TEAMCITY_GIT_PATH or GIT or add it to PATH"
@@ -199,10 +201,49 @@ internal fun latestChangeCommit(path: String, repo: Path): CommitInfo? {
 }
 
 /**
- * @return latest modified time of [path] change ignoring git commit time for performance reasons
+ * @return latest modified time of existing [path] (ignoring git commit time for performance reasons) or latest commit (or merge) time if [path] doesn't exist anymore
  */
 internal fun latestChangeTime(path: String, repo: Path): Long {
-  return repo.resolve(path).getLastModifiedTime().toMillis()
+  val file = repo.resolve(path)
+  if (file.exists()) {
+    return file.getLastModifiedTime().toMillis()
+  }
+  // latest commit for file
+  val commit = latestChangeCommit(path, repo)
+  if (commit == null) return -1
+  val mergeCommit = findMergeCommit(repo, commit.hash)
+  return max(commit.timestamp, mergeCommit?.timestamp ?: -1)
+}
+
+/**
+ * see [https://stackoverflow.com/questions/8475448/find-merge-commit-which-include-a-specific-commit]
+ */
+private fun findMergeCommit(repo: Path, commit: String, searchUntil: String = "HEAD"): CommitInfo? {
+  // list commits that are both descendants of commit hash and ancestors of HEAD
+  val ancestryPathList = execute(repo, GIT, "rev-list", "$commit..$searchUntil", "--ancestry-path")
+    .lineSequence().filter { it.isNotBlank() }
+  // follow only the first parent commit upon seeing a merge commit
+  val firstParentList = execute(repo, GIT, "rev-list", "$commit..$searchUntil", "--first-parent")
+    .lineSequence().filter { it.isNotBlank() }.toSet()
+  // last common commit may be the latest merge
+  return ancestryPathList
+    .lastOrNull(firstParentList::contains)
+    ?.let { commitInfo(repo, it) }
+    ?.takeIf {
+      // should be a merge
+      it.parents.size > 1 &&
+      // but not some branch merge right after [commit]
+      it.parents.first() != commit
+    }?.let {
+      when {
+        it.parents.size > 2 -> {
+          log("WARNING: Merge commit ${it.hash} for $commit in $repo is found but it has more than two parents (one of them could be master), skipping")
+          null
+        }
+        // merge is found
+        else -> it
+      }
+    }
 }
 
 @Volatile
