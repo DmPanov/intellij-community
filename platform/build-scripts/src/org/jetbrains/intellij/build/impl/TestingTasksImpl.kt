@@ -237,7 +237,7 @@ internal class TestingTasksImpl(context: CompilationContext, private val options
     systemProperties: MutableMap<String, String>,
   ) {
     for (configuration in runConfigurations) {
-      spanBuilder("run '${configuration.name}' run configuration").use {
+      block("'${configuration.name}' run configuration") {
         runTestsFromRunConfiguration(runConfigurationProperties = configuration, additionalJvmOptions = additionalJvmOptions, systemProperties = systemProperties)
       }
     }
