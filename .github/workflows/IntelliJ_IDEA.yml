@@ -1,0 +1,99 @@
+name: IntelliJ IDEA
+on:
+  push:
+    tags:
+      - idea/*/none-yet
+  workflow_dispatch:
+    inputs:
+      buildNumber:
+        description: 'Build number'
+        default: 'SNAPSHOT'
+        required: true
+        type: string
+      release:
+        description: 'Release'
+        default: false
+        required: true
+        type: boolean
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Community
+        uses: actions/checkout@v4.1.1
+      - name: Checkout Android
+        uses: actions/checkout@v4.1.1
+        with:
+          repository: JetBrains/android
+          path: android
+          ref: ${{github.ref}}
+      - name: Build Environment
+        run: docker build . --target build_env --tag build_env
+      - name: Build Distribution
+        run: docker run --rm --volume ${PWD}:/community build_env
+      - name: Upload Distribution
+        uses: actions/upload-artifact@v4.3.1
+        with:
+          name: distribution
+          path: |
+            out/idea-ce/artifacts/ideaIC-${{inputs.buildNumber}}.dmg
+            out/idea-ce/artifacts/ideaIC-${{inputs.buildNumber}}.dmg.spdx.json
+            out/idea-ce/artifacts/ideaIC-${{inputs.buildNumber}}-aarch64.dmg
+            out/idea-ce/artifacts/ideaIC-${{inputs.buildNumber}}-aarch64.dmg.spdx.json
+            out/idea-ce/artifacts/ideaIC-${{inputs.buildNumber}}.exe
+            out/idea-ce/artifacts/ideaIC-${{inputs.buildNumber}}.exe.spdx.json
+            out/idea-ce/artifacts/ideaIC-${{inputs.buildNumber}}-aarch64.exe
+            out/idea-ce/artifacts/ideaIC-${{inputs.buildNumber}}-aarch64.exe.spdx.json
+            out/idea-ce/artifacts/ideaIC-${{inputs.buildNumber}}.tar.gz
+            out/idea-ce/artifacts/ideaIC-${{inputs.buildNumber}}.tar.gz.spdx.json
+            out/idea-ce/artifacts/ideaIC-${{inputs.buildNumber}}-aarch64.tar.gz
+            out/idea-ce/artifacts/ideaIC-${{inputs.buildNumber}}-aarch64.tar.gz.spdx.json
+            out/idea-ce/artifacts/intellij-idea-community_${{inputs.buildNumber}}_amd64.snap
+            out/idea-ce/artifacts/intellij-idea-community_${{inputs.buildNumber}}_amd64.snap.spdx.json
+            out/idea-ce/artifacts/intellij-idea-community_${{inputs.buildNumber}}_arm64.snap
+            out/idea-ce/artifacts/intellij-idea-community_${{inputs.buildNumber}}_arm64.snap.spdx.json
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    needs: build
+    if: ${{inputs.release}}
+    steps:
+      - name: Download Distribution
+        uses: actions/download-artifact@v4.1.7
+        with:
+          name: distribution
+      - name: Create Release
+        uses: actions/github-script@v7.0.1
+        env:
+          BUILD_NUMBER: ${{inputs.buildNumber}}
+        with:
+          script: |
+            const versionName = 'jbr-api-' + process.env.BUILD_NUMBER;
+            const jarName     = versionName + '.jar';
+            const sourcesName = versionName + '-sources.jar';
+            const javadocName = versionName + '-javadoc.jar';
+            const response = await github.rest.repos.createRelease({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: 'v' + process.env.BUILD_NUMBER,
+                tag_name: 'v' + process.env.BUILD_NUMBER,
+                body: '',
+                draft: false,
+                prerelease: false,
+                generate_release_notes: false,
+            });
+            var fs = require('fs');
+            for (assetName of [
+                jarName,
+                sourcesName,
+                javadocName,
+            ]) {
+                await github.rest.repos.uploadReleaseAsset({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    url: response.data.upload_url,
+                    name: assetName,
+                    data: fs.readFileSync(assetName),
+                });
+            }

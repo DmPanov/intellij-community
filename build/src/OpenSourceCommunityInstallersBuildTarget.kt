@@ -1,8 +1,11 @@
 // Copyright 2000-2024 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
+import kotlinx.collections.immutable.persistentListOf
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import org.jetbrains.intellij.build.BuildOptions
 import org.jetbrains.intellij.build.CompilationTasks
+import org.jetbrains.intellij.build.JvmArchitecture
+import org.jetbrains.intellij.build.OsFamily
 import org.jetbrains.intellij.build.buildCommunityStandaloneJpsBuilder
 import org.jetbrains.intellij.build.createCommunityBuildContext
 import org.jetbrains.intellij.build.impl.buildDistributions
@@ -18,6 +21,8 @@ internal object OpenSourceCommunityInstallersBuildTarget {
       incrementalCompilation = true
       useCompiledClassesFromProjectOutput = false
       buildStepsToSkip += BuildOptions.MAC_SIGN_STEP
+      targetOs = persistentListOf(OsFamily.LINUX)
+      targetArch = JvmArchitecture.x64
     }
 
     runBlocking(Dispatchers.Default) {
