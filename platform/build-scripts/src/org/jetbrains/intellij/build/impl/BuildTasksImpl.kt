@@ -476,7 +476,7 @@ suspend fun buildDistributions(context: BuildContext): Unit = block("build distr
     }
 
     layoutShared(context)
-
+    recursivelyVerifyWindowsSignatures(context)
     val distDirs = buildOsSpecificDistributions(context)
 
     lookForJunkFiles(context, listOf(context.paths.distAllDir) + distDirs.map { it.outDir })

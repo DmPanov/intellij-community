@@ -5,12 +5,14 @@ package org.jetbrains.intellij.build.impl
 import com.intellij.openapi.util.SystemInfoRt
 import com.jetbrains.signatureverifier.ILogger
 import com.jetbrains.signatureverifier.InvalidDataException
+import com.jetbrains.signatureverifier.PeFile
+import com.jetbrains.signatureverifier.SignatureData
 import com.jetbrains.signatureverifier.crypt.SignatureVerificationParams
 import com.jetbrains.signatureverifier.crypt.SignedMessage
 import com.jetbrains.signatureverifier.crypt.SignedMessageVerifier
 import com.jetbrains.signatureverifier.crypt.VerifySignatureStatus
 import com.jetbrains.signatureverifier.macho.MachoArch
-import com.jetbrains.util.filetype.FileProperties
+import com.jetbrains.util.Rewind
 import com.jetbrains.util.filetype.FileType
 import com.jetbrains.util.filetype.FileTypeDetector.DetectFileType
 import io.opentelemetry.api.common.AttributeKey
@@ -20,11 +22,13 @@ import kotlinx.collections.immutable.persistentMapOf
 import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.jetbrains.intellij.build.BuildContext
 import org.jetbrains.intellij.build.BuildOptions
 import org.jetbrains.intellij.build.io.*
+import org.jetbrains.intellij.build.OsFamily
 import org.jetbrains.intellij.build.telemetry.TraceManager.spanBuilder
 import org.jetbrains.intellij.build.telemetry.use
 import java.nio.ByteBuffer
@@ -33,7 +37,6 @@ import java.nio.channels.SeekableByteChannel
 import java.nio.file.*
 import java.nio.file.attribute.BasicFileAttributes
 import java.nio.file.attribute.FileTime
-import java.util.EnumSet
 import java.util.concurrent.TimeUnit
 import kotlin.io.path.exists
 import kotlin.io.path.extension
@@ -47,6 +50,82 @@ internal fun isMacLibrary(name: String): Boolean {
          name.endsWith(".tbd")
 }
 
+private fun isWindowsBinary(name: String): Boolean {
+  return name.endsWith(".dll") || name.endsWith(".exe")
+}
+
+private fun isArchive(name: String): Boolean {
+  return name.endsWith(".jar") || name.endsWith(".zip")
+}
+
+/**
+ * See [BuildOptions.WIN_SIGN_STEP] implementation in [WindowsDistributionBuilder]
+ */
+private fun BuildContext.isBuildTimeSigned(relativePath: String): Boolean {
+  return relativePath.startsWith("bin/") || windowsDistributionCustomizer
+    ?.getBinariesToSign(this)
+    ?.contains(relativePath) == true
+}
+
+internal suspend fun recursivelyVerifyWindowsSignatures(context: BuildContext) {
+  coroutineScope {
+    (sequenceOf(context.paths.distAllDir) + SUPPORTED_DISTRIBUTIONS.filter { it.os == OsFamily.WINDOWS }.flatMap { (os, arch) ->
+      val runtimeDist = context.bundledRuntime.extract(os = os, arch = arch)
+      sequence {
+        yield(runtimeDist)
+        if (context.shouldBuildDistributionForOS(os, arch)) {
+          yield(getOsAndArchSpecificDistDirectory(os, arch, context))
+        }
+      }
+    }).filter { it.exists() }.forEach {
+      launch(CoroutineName("verifying Windows binaries in $it")) {
+        recursivelyVerifyWindowsSignatures(it, context)
+      }
+    }
+  }
+}
+
+private fun CoroutineScope.recursivelyVerifyWindowsSignatures(root: Path, context: BuildContext) {
+  Files.walkFileTree(root, object : SimpleFileVisitor<Path>() {
+    override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult {
+      val name = file.name
+      if (isArchive(name)) {
+        launch(CoroutineName("verifying Windows binaries in ${file.relativeTo(root)}")) {
+          unpackZipAndVerifyWindowsSignatures(file, context)
+        }
+      }
+      else if (isWindowsBinary(name) && !context.isBuildTimeSigned(file.relativeTo(root).toString())) {
+        launch(CoroutineName("verifying Windows binary $name")) {
+          Files.newByteChannel(file).use {
+            if (isWindowsBinary(it) && !isWindowsSigned(it, binaryId = "$file")) {
+              context.messages.reportBuildProblem("Binary $file is not signed", identity = "$file")
+            }
+          }
+        }
+      }
+      return FileVisitResult.CONTINUE
+    }
+  })
+}
+
+private suspend fun unpackZipAndVerifyWindowsSignatures(zip: Path, context: BuildContext) {
+  suspendAwareReadZipFile(zip) { name, dataSupplier ->
+    if (isWindowsBinary(name)) {
+      val data = with(dataSupplier()) {
+        /**
+         * See [detectFileType]
+         */
+        if (position() > 0) slice() else this
+      }
+      ByteBufferChannel(data).use {
+        if (isWindowsBinary(it) && !isWindowsSigned(it, name)) {
+          context.messages.reportBuildProblem("Binary $zip!$name is not signed", identity = "$zip!$name")
+        }
+      }
+    }
+  }
+}
+
 internal fun CoroutineScope.recursivelySignMacBinaries(
   root: Path,
   context: BuildContext,
@@ -58,8 +137,8 @@ internal fun CoroutineScope.recursivelySignMacBinaries(
   Files.walkFileTree(root, object : SimpleFileVisitor<Path>() {
     override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult {
       val relativePath = root.relativize(file)
-      val name = file.fileName.toString()
-      if (name.endsWith(".jar") || name.endsWith(".zip")) {
+      val name = file.name
+      if (isArchive(name)) {
         archives.add(file)
       }
       else if (isMacLibrary(name) ||
@@ -72,8 +151,11 @@ internal fun CoroutineScope.recursivelySignMacBinaries(
   })
 
   launch(CoroutineName("signing macOS binaries")) {
-    signMacBinaries(binaries.filter {
-      isMacBinary(it) && !isSigned(it)
+    signMacBinaries(binaries.filter { binary ->
+      Files.newByteChannel(binary).use {
+        isMacBinary(it) &&
+        !isMacBinarySigned(it, binaryId = "$binary")
+      }
     }, context)
   }
 
@@ -92,15 +174,17 @@ private suspend fun signAndRepackZipIfMacSignaturesAreMissing(zip: Path, context
     }
 
     val data = dataSupplier()
-    val byteChannel = ByteBufferChannel(data)
-    data.mark()
-    if (isMacBinary(byteChannel)) {
-      data.reset()
-      if (!isSigned(byteChannel, name)) {
+    ByteBufferChannel(data).use { byteChannel ->
+      data.mark()
+      if (isMacBinary(byteChannel)) {
         data.reset()
-        val fileToBeSigned = Files.createTempFile(context.paths.tempDir, name.replace('/', '-').takeLast(128), "")
-        writeToFile(fileToBeSigned, data)
-        filesToBeSigned.put(name, fileToBeSigned)
+        if (!isMacBinarySigned(byteChannel, name)) {
+          data.reset()
+          val fileToBeSigned = Files.createTempFile(context.paths.tempDir, name.replace('/', '-').takeLast(128), "")
+          writeToFile(fileToBeSigned, data)
+
+          filesToBeSigned.put(name, fileToBeSigned)
+        }
       }
     }
   }
@@ -190,7 +274,7 @@ internal suspend fun signMacBinaries(
       }
     }
 
-    val missingSignature = files.filter { !isSigned(it) }
+    val missingSignature = files.filterNot { isMacBinarySigned(it) }
     check(missingSignature.isEmpty()) {
       "Missing signature for:\n" + missingSignature.joinToString(separator = "\n\t")
     }
@@ -203,7 +287,7 @@ internal suspend fun signData(data: ByteBuffer, context: BuildContext): Path {
   val file = Files.createTempFile(context.paths.tempDir, "", "")
   writeToFile(file, data)
   context.proprietaryBuildTools.signTool.signFiles(files = listOf(file), context = context, options = options)
-  check(isSigned(file)) { "Missing signature for $file" }
+  check(isMacBinarySigned(file)) { "Missing signature for $file" }
   return file
 }
 
@@ -213,61 +297,124 @@ private fun writeToFile(file: Path?, data: ByteBuffer) {
   }
 }
 
-private fun isMacBinary(path: Path): Boolean = isMacBinary(Files.newByteChannel(path))
-
-internal suspend fun isSigned(path: Path): Boolean {
+internal suspend fun isMacBinarySigned(path: Path): Boolean {
   return withContext(Dispatchers.IO) {
     Files.newByteChannel(path).use {
-      isSigned(byteChannel = it, binaryId = path.toString())
+      isMacBinarySigned(byteChannel = it, binaryId = path.toString())
     }
   }
 }
 
-internal fun isMacBinary(byteChannel: SeekableByteChannel): Boolean {
-  return detectFileType(byteChannel).first == FileType.MachO
+/**
+ * @param byteChannel should be closed by a caller
+ */
+internal suspend fun isMacBinary(byteChannel: SeekableByteChannel): Boolean {
+  return byteChannel.detectFileType() == FileType.MachO
 }
 
-private fun detectFileType(byteChannel: SeekableByteChannel): Pair<FileType, EnumSet<FileProperties>> {
-  return byteChannel.use {
-    it.DetectFileType()
+/**
+ * @param byteChannel should be closed by a caller
+ */
+private suspend fun isWindowsBinary(byteChannel: SeekableByteChannel): Boolean {
+  return byteChannel.detectFileType() == FileType.Pe
+}
+
+/**
+ * See [withRewind]
+ */
+internal suspend fun SeekableByteChannel.detectFileType(): FileType {
+  return withRewind {
+    DetectFileType().first
   }
 }
 
 /**
  * Assumes [isMacBinary].
+ * See [withRewind].
  */
-internal suspend fun isSigned(byteChannel: SeekableByteChannel, binaryId: String): Boolean {
-  val verificationParams = SignatureVerificationParams(signRootCertStore = null, timestampRootCertStore = null, buildChain = false, withRevocationCheck = false)
-  val binaries = MachoArch(byteChannel).Extract()
-  return binaries.all { binary ->
-    val signatureData = try {
-      binary.GetSignatureData()
+internal suspend fun isMacBinarySigned(byteChannel: SeekableByteChannel, binaryId: String): Boolean {
+  val verificationParams = SignatureVerificationParams(
+    signRootCertStore = null,
+    timestampRootCertStore = null,
+    buildChain = false,
+    withRevocationCheck = false
+  )
+  return byteChannel.withRewind {
+    val binaries = MachoArch(byteChannel).Extract()
+    binaries.all { binary ->
+      isSigned(verificationParams, binaryId) {
+        binary.GetSignatureData()
+      }
     }
-    catch (_: InvalidDataException) {
-      return@all false
-    }
-
-    if (signatureData.IsEmpty) {
-      return@all false
-    }
-
-    val signedMessage = try {
-      SignedMessage.CreateInstance(signatureData)
-    }
-    catch (_: Exception) {
-      // assuming Signature=adhoc
-      return@all false
-    }
-
-    val result = try {
-      val signedMessageVerifier = SignedMessageVerifier(SignatureVerificationLog(binaryId))
-      signedMessageVerifier.VerifySignatureAsync(signedMessage, verificationParams)
-    }
-    catch (e: Exception) {
-      throw Exception("Failed to verify $binaryId", e)
-    }
-    result.Status == VerifySignatureStatus.Valid
   }
+}
+
+/**
+ * See [withRewind]
+ */
+internal suspend fun isWindowsSigned(byteChannel: SeekableByteChannel, binaryId: String): Boolean {
+  val verificationParams = SignatureVerificationParams(
+    signRootCertStore = null,
+    timestampRootCertStore = null,
+    buildChain = false,
+    withRevocationCheck = false
+  )
+  return byteChannel.withRewind {
+    isSigned(verificationParams, binaryId = binaryId) {
+      PeFile(byteChannel).GetSignatureData()
+    }
+  }
+}
+
+/**
+ * `format-ripper` library rewinds [SeekableByteChannel.position] to 0 with [Rewind], so this method fails if [SeekableByteChannel.position] > 0.
+ * Please use [ByteBuffer.slice] as a source for [SeekableByteChannel] instead.
+ */
+private suspend fun <T> SeekableByteChannel.withRewind(action: suspend SeekableByteChannel.() -> T): T {
+  check(position() == 0L) {
+    "SeekableByteChannel#position = ${position()} but 0 is required. " +
+    "Please use ByteBuffer#slice as a source for SeekableByteChannel instead."
+  }
+  return try {
+    action()
+  }
+  finally {
+    Rewind()
+  }
+}
+
+private suspend fun isSigned(
+  verificationParams: SignatureVerificationParams,
+  binaryId: String,
+  signatureDataSupplier: () -> SignatureData,
+): Boolean {
+  val signatureData = try {
+    signatureDataSupplier()
+  }
+  catch (_: InvalidDataException) {
+    return false
+  }
+
+  if (signatureData.IsEmpty) {
+    return false
+  }
+
+  val signedMessage = try {
+    SignedMessage.CreateInstance(signatureData)
+  }
+  catch (_: Exception) {
+    // assuming Signature=adhoc
+    return false
+  }
+
+  val result = try {
+    val signedMessageVerifier = SignedMessageVerifier(SignatureVerificationLog(binaryId))
+    signedMessageVerifier.VerifySignatureAsync(signedMessage, verificationParams)
+  }
+  catch (e: Exception) {
+    throw Exception("Failed to verify $binaryId", e)
+  }
+  return result.Status == VerifySignatureStatus.Valid
 }
 
 private class SignatureVerificationLog(val binaryId: String) : ILogger {

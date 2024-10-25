@@ -9,7 +9,6 @@ import com.intellij.util.PathUtilRt
 import com.intellij.util.io.URLUtil
 import com.intellij.util.io.sanitizeFileName
 import com.jetbrains.util.filetype.FileType
-import com.jetbrains.util.filetype.FileTypeDetector.DetectFileType
 import io.opentelemetry.api.common.AttributeKey
 import it.unimi.dsi.fastutil.objects.ObjectLinkedOpenHashSet
 import it.unimi.dsi.fastutil.objects.Reference2ObjectLinkedOpenHashMap
@@ -1036,30 +1035,34 @@ private class NativeFileHandlerImpl(private val context: BuildContext, private v
 
   @Suppress("SpellCheckingInspection")
   override suspend fun sign(name: String, dataSupplier: () -> ByteBuffer): Path? {
-    if (!context.isMacCodeSignEnabled || context.proprietaryBuildTools.signTool.signNativeFileMode != SignNativeFileMode.ENABLED) {
+    if (context.proprietaryBuildTools.signTool.signNativeFileMode != SignNativeFileMode.ENABLED) {
       return null
     }
 
-    // we allow using .so for macOS binraries (binaries/macOS/libasyncProfiler.so), but removing obvious Linux binaries
+    // we allow using .so for macOS binaries (binaries/macOS/libasyncProfiler.so), but removing obvious Linux binaries
     // (binaries/linux-aarch64/libasyncProfiler.so) to avoid detecting by binary content
-    if (name.endsWith(".dll") || name.endsWith(".exe") || name.contains("/linux/") || name.contains("/linux-") || name.contains("icudtl.dat")) {
+    if (name.contains("/linux/") || name.contains("/linux-") || name.contains("icudtl.dat")) {
       return null
     }
 
     val data = dataSupplier()
-    data.mark()
-    val byteBufferChannel = ByteBufferChannel(data)
-    if (byteBufferChannel.DetectFileType().first != FileType.MachO) {
-      return null
+    return ByteBufferChannel(data).use { byteBufferChannel ->
+      when (byteBufferChannel.detectFileType()) {
+        FileType.MachO -> {
+          if (isMacBinarySigned(byteBufferChannel, name) || !context.isMacCodeSignEnabled) {
+            return null
+          }
+          signData(data, context)
+        }
+        FileType.Pe -> {
+          if (!isWindowsSigned(byteBufferChannel, name)) {
+            context.messages.warning("Windows binary $name is not signed")
+          }
+          return null
+        }
+        else -> null
+      }
     }
-
-    data.reset()
-    if (isSigned(byteBufferChannel, name)) {
-      return null
-    }
-
-    data.reset()
-    return signData(data, context)
   }
 }
 
