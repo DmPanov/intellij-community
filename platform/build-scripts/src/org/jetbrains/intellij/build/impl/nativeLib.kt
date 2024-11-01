@@ -192,8 +192,7 @@ private suspend fun unpackNativeLibraries(
       // add an executable flag for native packaged files without an extension on POSIX OS (as it can be executed directly, opposite to lib)
       val isExecutable = os != OsFamily.WINDOWS && !PathUtilRt.getFileName(path).contains('.')
       if (file == null) {
-        @Suppress("UNNECESSARY_NOT_NULL_ASSERTION")
-        file = tempDir.resolve(path)!!
+        file = tempDir.resolve(path)
         if (!dryRun) {
           extractFileToDisk(file = file, zipFile = zipFile, pathWithPackage = pathWithPackage, isExecutable = isExecutable)
         }

@@ -223,7 +223,7 @@ private suspend fun copyZipReplacing(origin: Path, entries: Map<String, Path>, c
     }
 }
 
-internal fun signingOptions(contentType: String, context: BuildContext): PersistentMap<String, String> {
+internal fun macSigningOptions(contentType: String, context: BuildContext): PersistentMap<String, String> {
   val certificateID = context.proprietaryBuildTools.macOsCodesignIdentity?.value
   check(certificateID != null || context.isStepSkipped(BuildOptions.MAC_SIGN_STEP)) {
     "Missing certificate ID"
@@ -264,7 +264,7 @@ internal suspend fun signMacBinaries(
   val span = spanBuilder("sign binaries for macOS distribution")
   span.setAttribute("contentType", "application/x-mac-app-bin")
   span.setAttribute(AttributeKey.stringArrayKey("files"), files.map { it.name })
-  val options = signingOptions(contentType = "application/x-mac-app-bin", context = context).putAll(m = additionalOptions)
+  val options = macSigningOptions(contentType = "application/x-mac-app-bin", context = context).putAll(m = additionalOptions)
   span.use {
     context.proprietaryBuildTools.signTool.signFiles(files = files, context = context, options = options)
     if (!permissions.isEmpty()) {
@@ -281,13 +281,10 @@ internal suspend fun signMacBinaries(
   }
 }
 
-internal suspend fun signData(data: ByteBuffer, context: BuildContext): Path {
-  val options = signingOptions("application/x-mac-app-bin", context)
-
-  val file = Files.createTempFile(context.paths.tempDir, "", "")
+internal suspend fun signData(data: ByteBuffer, fileName: String, context: BuildContext, options: PersistentMap<String, String>): Path {
+  val file = Files.createTempFile(context.paths.tempDir, "signData", fileName)
   writeToFile(file, data)
-  context.proprietaryBuildTools.signTool.signFiles(files = listOf(file), context = context, options = options)
-  check(isMacBinarySigned(file)) { "Missing signature for $file" }
+  context.signFiles(files = listOf(file), options = options)
   return file
 }
 
@@ -310,6 +307,14 @@ internal suspend fun isMacBinarySigned(path: Path): Boolean {
  */
 internal suspend fun isMacBinary(byteChannel: SeekableByteChannel): Boolean {
   return byteChannel.detectFileType() == FileType.MachO
+}
+
+internal suspend fun isWindowsBinarySigned(path: Path): Boolean {
+  return withContext(Dispatchers.IO) {
+    Files.newByteChannel(path).use {
+      isWindowsSigned(byteChannel = it, binaryId = "$path")
+    }
+  }
 }
 
 /**

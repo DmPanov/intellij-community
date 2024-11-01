@@ -572,7 +572,7 @@ class MacDistributionBuilder(
     Files.move(macZip, sitFile, StandardCopyOption.REPLACE_EXISTING)
 
     if (context.isMacCodeSignEnabled) {
-      context.proprietaryBuildTools.signTool.signFiles(listOf(sitFile), context, signingOptions("application/x-mac-app-zip", context))
+      context.proprietaryBuildTools.signTool.signFiles(listOf(sitFile), context, macSigningOptions("application/x-mac-app-zip", context))
     }
 
     if (notarize) {

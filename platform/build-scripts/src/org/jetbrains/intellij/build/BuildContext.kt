@@ -32,6 +32,9 @@ interface BuildContext : CompilationContext {
   val isMacCodeSignEnabled: Boolean
     get() = !isStepSkipped(BuildOptions.MAC_SIGN_STEP) && proprietaryBuildTools.signTool.signNativeFileMode != SignNativeFileMode.DISABLED
 
+  val isWindowsCodeSignEnabled: Boolean
+    get() = !isStepSkipped(BuildOptions.WIN_SIGN_STEP) && proprietaryBuildTools.signTool.signNativeFileMode != SignNativeFileMode.DISABLED
+
   /**
    * Relative paths to files in distribution which should take 'executable' permissions.
    * No need to add *.sh.
