@@ -1,5 +1,6 @@
 name: IntelliJ IDEA
 on:
+  workflow_dispatch:
   schedule:
     # daily at 4AM for the master branch
     - cron: '0 4 * * *'
