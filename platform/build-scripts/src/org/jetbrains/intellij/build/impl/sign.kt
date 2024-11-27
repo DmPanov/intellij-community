@@ -25,9 +25,12 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.jetbrains.intellij.build.BuildContext
 import org.jetbrains.intellij.build.BuildOptions
 import org.jetbrains.intellij.build.io.*
+import org.jetbrains.intellij.build.BuildPaths
 import org.jetbrains.intellij.build.OsFamily
 import org.jetbrains.intellij.build.telemetry.TraceManager.spanBuilder
 import org.jetbrains.intellij.build.telemetry.use
@@ -38,9 +41,11 @@ import java.nio.file.*
 import java.nio.file.attribute.BasicFileAttributes
 import java.nio.file.attribute.FileTime
 import java.util.concurrent.TimeUnit
+import kotlin.io.path.appendText
 import kotlin.io.path.exists
 import kotlin.io.path.extension
 import kotlin.io.path.name
+import kotlin.io.path.readLines
 import kotlin.io.path.relativeTo
 
 internal fun isMacLibrary(name: String): Boolean {
@@ -121,6 +126,20 @@ private suspend fun unpackZipAndVerifyWindowsSignatures(zip: Path, context: Buil
         if (isWindowsBinary(it) && !isWindowsSigned(it, name)) {
           context.messages.reportBuildProblem("Binary $zip!$name is not signed", identity = "$zip!$name")
         }
+      }
+    }
+  }
+}
+
+internal object BinariesAutoSignList {
+  private val listUpdateMutex = Mutex()
+  private val list: Path = BuildPaths.COMMUNITY_ROOT.communityRoot.resolve("../build/binaries-autosign.txt")
+
+  suspend fun register(binaryId: String) {
+    listUpdateMutex.withLock {
+      if (!list.readLines().contains(binaryId)) {
+        list.appendText("$binaryId\n")
+        println("$binaryId is added to ${list.name}")
       }
     }
   }
@@ -266,7 +285,17 @@ internal suspend fun signMacBinaries(
   span.setAttribute(AttributeKey.stringArrayKey("files"), files.map { it.name })
   val options = macSigningOptions(contentType = "application/x-mac-app-bin", context = context).putAll(m = additionalOptions)
   span.use {
-    context.proprietaryBuildTools.signTool.signFiles(files = files, context = context, options = options)
+    for (file in files) {
+      BinariesAutoSignList.register(
+        binaryId = when {
+          file.startsWith(context.paths.tempDir) -> context.paths.tempDir
+          file.startsWith(context.paths.distAllDir) -> context.paths.distAllDir
+          file.startsWith(context.paths.buildOutputDir) -> context.paths.buildOutputDir
+          else -> error("Unexpected binary location: $file")
+        }.relativize(file).toString()
+      )
+    }
+    context.signFiles(files = files, options = options)
     if (!permissions.isEmpty()) {
       // SRE-1223 workaround
       files.forEach {

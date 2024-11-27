@@ -36,7 +36,7 @@ internal interface NativeFileHandler {
 
   fun isCompatibleWithTargetPlatform(name: String): Boolean
 
-  suspend fun sign(name: String, dataSupplier: () -> ByteBuffer): Path?
+  suspend fun sign(name: String, binaryId: String, dataSupplier: () -> ByteBuffer): Path?
 }
 
 suspend fun buildJar(targetFile: Path, sources: List<Source>, compress: Boolean = false) {
@@ -244,7 +244,7 @@ private suspend fun handleZipSource(
         packageIndexBuilder?.addFile(name)
 
         // sign it
-        val file = nativeFileHandler.sign(name, dataSupplier)
+        val file = nativeFileHandler.sign(name, "$sourceFile!$name", dataSupplier)
         if (file == null) {
           val data = dataSupplier()
           writeZipData(data)

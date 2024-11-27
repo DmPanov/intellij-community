@@ -55,7 +55,7 @@ open class LinuxDistributionCustomizer {
   }
 
   /**
-   * If `true`, a separate *[org.jetbrains.intellij.build.impl.LinuxDistributionBuilder.NO_RUNTIME_SUFFIX].tar.gz artifact without a runtime will be produced.
+   * If `true`, a separate *[org.jetbrains.intellij.build.impl.NO_RUNTIME_SUFFIX].tar.gz artifact without a runtime will be produced.
    */
   var buildArtifactWithoutRuntime = false
 

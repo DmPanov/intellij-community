@@ -1037,7 +1037,7 @@ private class NativeFileHandlerImpl(private val context: BuildContext, private v
   }
 
   @Suppress("SpellCheckingInspection")
-  override suspend fun sign(name: String, dataSupplier: () -> ByteBuffer): Path? {
+  override suspend fun sign(name: String, binaryId: String, dataSupplier: () -> ByteBuffer): Path? {
     if (context.proprietaryBuildTools.signTool.signNativeFileMode != SignNativeFileMode.ENABLED) {
       return null
     }
@@ -1053,17 +1053,17 @@ private class NativeFileHandlerImpl(private val context: BuildContext, private v
     return ByteBufferChannel(data).use { byteBufferChannel ->
       when (byteBufferChannel.detectFileType()) {
         FileType.MachO -> {
-          if (isMacBinarySigned(byteBufferChannel, name) || !context.isMacCodeSignEnabled) {
-            return null
-          }
+          if (isMacBinarySigned(byteBufferChannel, name)) return null
+          BinariesAutoSignList.register(binaryId)
+          if (!context.isMacCodeSignEnabled) return null
           val signed = signData(data, fileName.name, context, macSigningOptions("application/x-mac-app-bin", context))
           check(isMacBinarySigned(signed)) { "Missing signature for $signed" }
           signed
         }
         FileType.Pe -> {
-          if (isWindowsSigned(byteBufferChannel, name) || !context.isWindowsCodeSignEnabled) {
-            return null
-          }
+          if (isWindowsSigned(byteBufferChannel, name)) return null
+          BinariesAutoSignList.register(binaryId)
+          if (!context.isWindowsCodeSignEnabled) return null
           val contentType = if (fileName.extension == "exe") "application/x-exe" else "application/x-dll"
           val signed = signData(data, fileName.name, context, BuildOptions.WIN_SIGN_OPTIONS.put("contentType", contentType))
           check(isWindowsBinarySigned(signed)) { "Missing signature for $signed" }
