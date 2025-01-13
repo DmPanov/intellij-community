@@ -7,6 +7,7 @@ on:
     # for each release
     tags:
       - 'idea/*'
+  workflow_dispatch:
 env:
   artifacts_dir: 'out/idea-ce/artifacts'
 jobs:
