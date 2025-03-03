@@ -65,6 +65,8 @@ object CommunityLibraryLicenses {
       .suppliedByOrganizations(Suppliers.APACHE),
 
     LibraryLicense("Apache Ant", version = "1.9", libraryName = "Ant", url = "https://ant.apache.org/")
+      // used in the intellij.gradle.jps module
+      .additionalLibraryNames("ant")
       .apache("https://ant.apache.org/license.html"),
 
     LibraryLicense("Apache Axis", libraryName = "axis-1.4", version = "1.4", url = "https://axis.apache.org/axis/")
