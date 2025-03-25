@@ -295,7 +295,13 @@ private suspend fun downloadFileToCacheLocation(
                 builder.append(inputStream.readNBytes(1024).toString(StandardCharsets.UTF_8))
               }
             }
-            throw BuildDependenciesDownloader.HttpStatusException(builder.toString(), statusCode, url)
+            val exception = BuildDependenciesDownloader.HttpStatusException(builder.toString(), statusCode, url)
+            if (statusCode == 404) {
+              throw MissingResourceException("$url is not found").apply {
+                addSuppressed(exception)
+              }
+            }
+            throw exception
           }
 
           val contentLength = headers.get(HttpHeaders.ContentLength)?.toLongOrNull() ?: -1

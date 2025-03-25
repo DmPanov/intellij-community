@@ -26,7 +26,7 @@ suspend fun <T> retryWithExponentialBackOff(
   catch (e: Exception) {
     onException(attempt, e)
     if (e is NoMoreRetriesException) {
-      throw Exception("Attempt $attempt failed, stopping retries", e).apply {
+      throw NoMoreRetriesException("Attempt $attempt failed, stopping retries", e).apply {
         exceptions.forEach(this::addSuppressed)
       }
     }
@@ -78,4 +78,5 @@ private fun nextDelay(
   return nextDelay
 }
 
-class NoMoreRetriesException(message: String): Exception(message)
+open class NoMoreRetriesException(message: String, cause: Exception? = null): Exception(message, cause)
+class MissingResourceException(message: String): NoMoreRetriesException(message)
