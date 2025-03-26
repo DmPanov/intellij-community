@@ -6,6 +6,7 @@ import com.intellij.platform.ijent.community.buildConstants.MULTI_ROUTING_FILE_S
 import com.intellij.platform.ijent.community.buildConstants.isMultiRoutingFileSystemEnabledForProduct
 import com.intellij.platform.runtime.product.ProductMode
 import com.intellij.util.containers.with
+import com.intellij.util.text.SemVer
 import io.opentelemetry.api.common.AttributeKey
 import io.opentelemetry.api.common.Attributes
 import io.opentelemetry.api.trace.Span
@@ -38,7 +39,6 @@ import org.jetbrains.intellij.build.ProductProperties
 import org.jetbrains.intellij.build.ProprietaryBuildTools
 import org.jetbrains.intellij.build.WindowsDistributionCustomizer
 import org.jetbrains.intellij.build.computeAppInfoXml
-import org.jetbrains.intellij.build.*
 import org.jetbrains.intellij.build.dependencies.LinuxLibcImpl
 import org.jetbrains.intellij.build.impl.PlatformJarNames.PLATFORM_CORE_NIO_FS
 import org.jetbrains.intellij.build.impl.plugins.PluginAutoPublishList
@@ -53,6 +53,10 @@ import org.jetbrains.jps.model.JpsProject
 import org.jetbrains.jps.model.module.JpsModule
 import java.nio.file.Files
 import java.nio.file.Path
+import java.time.Instant
+import java.time.ZoneOffset
+import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.io.path.invariantSeparatorsPathString
@@ -85,7 +89,18 @@ class BuildContextImpl internal constructor(
   }
 
   override val pluginBuildNumber: String by lazy {
-    options.pluginBuildNumber ?: buildNumber
+    var value = buildNumber
+    if (value.endsWith(SnapshotBuildNumber.SNAPSHOT_SUFFIX)) {
+      val buildDate = ZonedDateTime.ofInstant(Instant.ofEpochSecond(options.buildDateInSeconds), ZoneOffset.UTC)
+      value = value.replace(SnapshotBuildNumber.SNAPSHOT_SUFFIX, "." + PLUGIN_DATE_FORMAT.format(buildDate))
+    }
+    if (value.count { it == '.' } == 1) {
+      value = "$value.0"
+    }
+    check(SemVer.parseFromText(value) != null) {
+      "The plugin build number $value is expected to match the Semantic Versioning, see https://semver.org"
+    }
+    value
   }
 
   override fun reportDistributionBuildNumber() {
@@ -191,6 +206,8 @@ class BuildContextImpl internal constructor(
         jarCacheManager = jarCacheManager,
       )
     }
+
+    private val PLUGIN_DATE_FORMAT = DateTimeFormatter.ofPattern("yyyyMMdd")
   }
 
   override var builtinModule: BuiltinModulesFileData?
