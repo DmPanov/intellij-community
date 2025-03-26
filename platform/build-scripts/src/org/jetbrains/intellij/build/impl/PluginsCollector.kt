@@ -17,7 +17,15 @@ suspend fun collectCompatiblePluginsToPublish(builtinModuleData: BuiltinModulesF
 
   val minimal = System.getProperty("intellij.build.minimal").toBoolean()
   val descriptorMap = collectPluginDescriptors(skipImplementationDetails = !minimal, skipBundled = true, honorCompatiblePluginsToIgnore = true, context)
-  val descriptorMapWithBundled = collectPluginDescriptors(skipImplementationDetails = true, skipBundled = false, honorCompatiblePluginsToIgnore = true, context)
+  val descriptorMapWithBundled = collectPluginDescriptors(skipImplementationDetails = !minimal, skipBundled = false, honorCompatiblePluginsToIgnore = true, context)
+  val descriptors = descriptorMapWithBundled.asSequence()
+    // only bundled plugins
+    .filterNot { descriptorMap.containsKey(it.key) }.map { it.value }
+    // which are configured to be auto-uploaded
+    .filter { context.pluginAutoPublishList.test(it.pluginLayout) }
+    // plus all non-bundled plugins
+    .plus(descriptorMap.values)
+    .toList()
 
   // While collecting PluginDescriptor maps above, we may have chosen incorrect PluginLayout.
   // Let's check that and substitute an incorrectly chosen one with a more suitable one or report an error.
@@ -36,7 +44,7 @@ suspend fun collectCompatiblePluginsToPublish(builtinModuleData: BuiltinModulesF
   }
 
   val errors = ArrayList<List<PluginLayout>>()
-  for (descriptor in descriptorMap.values) {
+  for (descriptor in descriptors) {
     if (isPluginCompatible(descriptor, availableModulesAndPlugins, nonCheckedModules = descriptorMapWithBundled)) {
       val layout = descriptor.pluginLayout
       val suspicious = moreThanOneLayoutMap.values.filter { it.contains(layout) }
