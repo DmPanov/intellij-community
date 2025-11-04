@@ -1,12 +1,6 @@
 name: PyCharm
 on:
-  schedule:
-    # daily at 4AM for the master branch
-    - cron: '0 4 * * *'
-  push:
-    # for each release
-    tags:
-      - 'pycharm/20*'
+  workflow_dispatch:
 
 jobs:
   build:
