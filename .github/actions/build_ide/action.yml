@@ -18,6 +18,23 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Free disk space
+      shell: bash
+      # language=bash
+      run: |
+        sudo rm -rf /usr/local/lib/android                 # Android SDK
+        sudo rm -rf /usr/share/dotnet                      # .NET SDK
+        sudo rm -rf /usr/local/.ghcup                      # Haskell toolchain
+        sudo rm -rf /opt/ghc                               # GHC compiler
+        sudo rm -rf /usr/share/swift                       # Swift toolchain
+        sudo rm -rf /opt/hostedtoolcache                   # Node.js, Python, Ruby, Go pre-installed versions
+        sudo rm -rf /usr/local/share/boost                 # Boost C++ libraries
+        sudo rm -rf /usr/local/share/powershell            # PowerShell
+        sudo rm -rf /usr/local/share/chromium              # Chromium browser
+        sudo rm -rf /usr/local/share/chromedriver-linux64  # ChromeDriver
+        sudo apt-get clean                                 # Downloaded apt package archives
+        docker image prune -af                             # Pre-pulled Docker images
+        df -h
     - name: Checkout JetBrains/android
       uses: actions/checkout@v4.2.2
       with:
